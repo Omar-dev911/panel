@@ -2,13 +2,14 @@
 
 clear
 
-# Colors
+# ===== Colors =====
 RED='\033[0;31m'
 GRN='\033[0;32m'
 CYN='\033[0;36m'
 YEL='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
+# ===== Banner =====
 echo -e "${YEL}"
 cat << "EOF"
  ███████╗ ███████╗
@@ -20,53 +21,40 @@ cat << "EOF"
 EOF
 echo -e "${NC}"
 
-echo -ne "${GRN}🔥 Please Subscribe \n"
+echo -e "${GRN}🔥 Installing Pterodactyl Panel (Docker) 🔥${NC}"
 
-for i in {1..3}; do
-  echo -ne "${CYN}Subscribing To SanjitGaming"
-  for dot in {1..3}; do
-    echo -n "."
-    sleep 0.3
-  done
-  echo -ne "\r                     \r"
-done
+# ===== Root Check =====
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}❌ Please run as root${NC}"
+  exit 1
+fi
 
-echo -e "${GRN} Thanks for Subscribing! If Not Do It Rn${NC}\n"
+# ===== Install dependencies =====
+echo -e "${YEL}📦 Installing dependencies...${NC}"
+apt update -y
+apt install -y docker.io docker-compose-plugin curl
 
-sleep 1
+# ===== Start Docker =====
+systemctl enable docker
+systemctl start docker
 
-echo -e "${YEL}X-> Installing Docker Compose...${NC}"
-apt update
-apt install docker-compose -y
+# ===== Create project folder =====
+echo -e "${CYN}📁 Setting up directories...${NC}"
+mkdir -p /opt/pterodactyl
+cd /opt/pterodactyl || exit
 
-echo -e "${CYN}X-> Setting up Pterodactyl Panel directories...${NC}"
-mkdir -p pterodactyl/panel
-cd pterodactyl/panel || exit
+mkdir -p data/{database,var,nginx,certs,logs}
 
-echo -e "${CYN}X-> Writing docker-compose.yml...${NC}"
+# ===== Variables (EDIT THESE IF NEEDED) =====
+DB_PASS="StrongPassword123!"
+ROOT_PASS="RootPassword123!"
+APP_URL="http://$(hostname -I | awk '{print $1}'):8080"
+
+# ===== docker-compose.yml =====
+echo -e "${CYN}📝 Creating docker-compose.yml...${NC}"
 
 cat <<EOF > docker-compose.yml
-version: '3.8'
-
-x-common:
-  database: &db-environment
-    MYSQL_PASSWORD: "CHANGE_ME"
-    MYSQL_ROOT_PASSWORD: "CHANGE_ME_TOO"
-
-  panel: &panel-environment
-    APP_URL: "https://pterodactyl.example.com"
-    APP_TIMEZONE: "UTC"
-    APP_SERVICE_AUTHOR: "noreply@example.com"
-    TRUSTED_PROXIES: "*"
-
-  mail: &mail-environment
-    MAIL_FROM: "noreply@example.com"
-    MAIL_DRIVER: "smtp"
-    MAIL_HOST: "mail"
-    MAIL_PORT: "1025"
-    MAIL_USERNAME: ""
-    MAIL_PASSWORD: ""
-    MAIL_ENCRYPTION: "true"
+version: "3.8"
 
 services:
   database:
@@ -76,9 +64,10 @@ services:
     volumes:
       - "./data/database:/var/lib/mysql"
     environment:
-      <<: *db-environment
+      MYSQL_ROOT_PASSWORD: "${ROOT_PASS}"
       MYSQL_DATABASE: "panel"
       MYSQL_USER: "pterodactyl"
+      MYSQL_PASSWORD: "${DB_PASS}"
 
   cache:
     image: redis:alpine
@@ -87,28 +76,29 @@ services:
   panel:
     image: ghcr.io/pterodactyl/panel:latest
     restart: always
-    ports:
-      - "8030:80"
-      - "4433:443"
-    links:
+    depends_on:
       - database
       - cache
+    ports:
+      - "8080:80"
     volumes:
       - "./data/var:/app/var"
+      - "./data/logs:/app/storage/logs"
       - "./data/nginx:/etc/nginx/http.d"
       - "./data/certs:/etc/letsencrypt"
-      - "./data/logs:/app/storage/logs"
     environment:
-      <<: [*panel-environment, *mail-environment]
-      DB_PASSWORD: "CHANGE_ME"
+      APP_URL: "${APP_URL}"
+      APP_TIMEZONE: "UTC"
+      APP_SERVICE_AUTHOR: "admin@example.com"
+      TRUSTED_PROXIES: "*"
+      DB_PASSWORD: "${DB_PASS}"
+      DB_HOST: "database"
+      DB_PORT: "3306"
       APP_ENV: "production"
-      APP_ENVIRONMENT_ONLY: "false"
       CACHE_DRIVER: "redis"
       SESSION_DRIVER: "redis"
       QUEUE_DRIVER: "redis"
       REDIS_HOST: "cache"
-      DB_HOST: "database"
-      DB_PORT: "3306"
 
 networks:
   default:
@@ -117,13 +107,23 @@ networks:
         - subnet: 172.20.0.0/16
 EOF
 
-echo -e "${CYN}X-> Creating data directories...${NC}"
-mkdir -p ./data/{database,var,nginx,certs,logs}
+# ===== Start Containers =====
+echo -e "${GRN}🚀 Starting containers...${NC}"
+docker compose up -d
 
-echo -e "${GRN}X-> Starting Pterodactyl containers...${NC}"
-docker-compose up -d
+# ===== Wait for DB =====
+echo -e "${YEL}⏳ Waiting for database...${NC}"
+sleep 15
 
-echo -e "${GRN}X-> Creating Admin User...${NC}"
-docker-compose run --rm panel php artisan p:user:make
+# ===== Initialize Panel =====
+echo -e "${GRN}⚙️ Initializing panel...${NC}"
+docker compose run --rm panel php artisan key:generate --force
+docker compose run --rm panel php artisan migrate --seed --force
 
-echo -e "${YEL}✅ All done! Enjoy${NC}"
+# ===== Create Admin =====
+echo -e "${GRN}👤 Create Admin Account${NC}"
+docker compose run --rm panel php artisan p:user:make
+
+# ===== Done =====
+echo -e "${GRN}✅ Installation Complete!${NC}"
+echo -e "${YEL}🌐 Open: ${APP_URL}${NC}"
